@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -233,6 +234,65 @@ func TestFilterAndPaginateModels(t *testing.T) {
 		assert.Len(t, resp.Data, 1)
 		assert.Equal(t, "csghub-gen", resp.Data[0].ID)
 	})
+}
+
+func TestOpenAIComponentImpl_getCSGHubModels_SkipsDeploysWithMissingRelations(t *testing.T) {
+	mockDeployStore := mockdb.NewMockDeployTaskStore(t)
+	comp := &openaiComponentImpl{
+		deployStore: mockDeployStore,
+		modelIDFmt:  "%s(%s)",
+	}
+
+	now := time.Now()
+	deploys := []database.Deploy{
+		{
+			ID:      1,
+			SvcName: "missing-repo",
+			Type:    commontypes.InferenceType,
+			User: &database.User{
+				Username: "owner",
+				UUID:     "owner-uuid",
+			},
+		},
+		{
+			ID:      2,
+			SvcName: "missing-user",
+			Type:    commontypes.InferenceType,
+			UserID:  2,
+			Repository: &database.Repository{
+				Name: "model-without-user",
+				Path: "namespace/model-without-user",
+			},
+		},
+		{
+			ID:      3,
+			SvcName: "valid-svc",
+			Type:    commontypes.InferenceType,
+			Repository: &database.Repository{
+				Name: "valid-model",
+				Path: "namespace/valid-model",
+			},
+			User: &database.User{
+				Username: "valid-owner",
+				UUID:     "valid-owner-uuid",
+			},
+			Endpoint: "valid-endpoint",
+		},
+	}
+	for i := range deploys {
+		deploys[i].CreatedAt = now
+	}
+
+	mockDeployStore.EXPECT().RunningVisibleToUser(mock.Anything, int64(1)).
+		Return(deploys, nil).Once()
+
+	models, err := comp.getCSGHubModels(context.Background(), 1)
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	assert.Equal(t, "namespace/valid-model:valid-svc", models[0].ID)
+	assert.Equal(t, "valid-owner", models[0].OwnedBy)
+	assert.Equal(t, "valid-owner-uuid", models[0].OwnerUUID)
+	assert.Equal(t, "valid-endpoint", models[0].Endpoint)
 }
 
 func TestOpenAIComponentImpl_applyFormatModelIDToModelList(t *testing.T) {
